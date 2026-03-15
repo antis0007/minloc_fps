@@ -5,14 +5,14 @@ use bevy::prelude::*;
 
 use crate::app_state::{GameState, SessionConfig};
 use crate::map::{ArenaMap, Solid};
-use crate::weapon::{WeaponKind, slot_weapon};
+use crate::weapon::{WeaponKind, slot_weapon, viewmodel_ascii};
 
 #[derive(Component)]
 pub struct LocalPlayer;
 #[derive(Component)]
 pub struct RemotePlayer;
 #[derive(Component)]
-pub struct ViewModelMesh;
+pub struct ViewModelAscii;
 #[derive(Component, Default)]
 pub struct Velocity(pub Vec3);
 #[derive(Component)]
@@ -82,7 +82,7 @@ impl Plugin for PlayerPlugin {
                 (
                     ensure_local_player,
                     ensure_remote_player,
-                    ensure_viewmodel_mesh,
+                    ensure_viewmodel_ascii,
                 )
                     .run_if(in_state(GameState::InGame)),
             )
@@ -104,7 +104,7 @@ impl Plugin for PlayerPlugin {
 
 fn cleanup_players(
     mut commands: Commands,
-    q: Query<Entity, Or<(With<LocalPlayer>, With<RemotePlayer>, With<ViewModelMesh>)>>,
+    q: Query<Entity, Or<(With<LocalPlayer>, With<RemotePlayer>, With<ViewModelAscii>)>>,
     mut look: ResMut<LookState>,
 ) {
     for e in &q {
@@ -139,32 +139,32 @@ fn ensure_local_player(
     ));
 }
 
-fn ensure_viewmodel_mesh(
+fn ensure_viewmodel_ascii(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
-    local: Query<(Entity, &ViewModelState, Option<&Children>), With<LocalPlayer>>,
-    vm_q: Query<(), With<ViewModelMesh>>,
+    local: Query<&ViewModelState, With<LocalPlayer>>,
+    q: Query<(), With<ViewModelAscii>>,
 ) {
-    let Ok((e, vm, children)) = local.single() else {
+    if !q.is_empty() {
+        return;
+    }
+    let Ok(vm) = local.single() else {
         return;
     };
-    if let Some(children) = children {
-        for c in children.iter() {
-            if vm_q.get(c).is_ok() {
-                return;
-            }
-        }
-    }
-    let (mesh, material) = viewmodel_placeholder(vm.weapon, &mut meshes, &mut mats);
-    commands.entity(e).with_children(|parent| {
-        parent.spawn((
-            Mesh3d(mesh),
-            MeshMaterial3d(material),
-            Transform::from_xyz(0.33, -0.28, -0.55),
-            ViewModelMesh,
-        ));
-    });
+    commands.spawn((
+        Text::new(viewmodel_ascii(vm.weapon)),
+        TextFont {
+            font_size: 21.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.93, 0.93, 0.93)),
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(56.0),
+            bottom: Val::Px(18.0),
+            ..default()
+        },
+        ViewModelAscii,
+    ));
 }
 
 fn ensure_remote_player(
@@ -315,35 +315,40 @@ fn animate_viewmodel(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     look: Res<LookState>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
     mut local: Query<
         (
             &Player,
             &Velocity,
             Option<&RespawnTimer>,
             &mut ViewModelState,
-            &Children,
         ),
         With<LocalPlayer>,
     >,
-    mut vm_q: Query<
-        (
-            &mut Transform,
-            &mut Mesh3d,
-            &mut MeshMaterial3d<StandardMaterial>,
-        ),
-        With<ViewModelMesh>,
-    >,
+    mut ascii: Query<(&mut Text, &mut Node, &mut TextColor), With<ViewModelAscii>>,
 ) {
-    let Ok((player, velocity, dead, mut vm, children)) = local.single_mut() else {
+    let Ok((player, velocity, dead, mut vm)) = local.single_mut() else {
         return;
     };
+    let Ok((mut text, mut node, mut color)) = ascii.single_mut() else {
+        return;
+    };
+
     if keys.just_pressed(KeyCode::KeyR) && vm.reload <= 0.0 {
         vm.reload = 0.65;
     }
     vm.reload = (vm.reload - time.delta_secs()).max(0.0);
     vm.recoil = (vm.recoil - time.delta_secs() * 5.0).max(0.0);
+
+    if vm.weapon != player.weapon {
+        *text = Text::new(viewmodel_ascii(player.weapon));
+        vm.weapon = player.weapon;
+    }
+
+    if player.hp <= 0 || dead.is_some() {
+        node.display = Display::None;
+        return;
+    }
+    node.display = Display::Flex;
 
     let dyaw = shortest_angle_delta(look.yaw, vm.last_yaw);
     let dpitch = look.pitch - vm.last_pitch;
@@ -359,47 +364,24 @@ fn animate_viewmodel(
     let speed = Vec2::new(velocity.0.x, velocity.0.z).length();
     vm.bob_phase += time.delta_secs() * (2.2 + speed * 0.35);
 
-    for c in children.iter() {
-        let Ok((mut t, mut mesh, mut mat)) = vm_q.get_mut(c) else {
-            continue;
-        };
-        if vm.weapon != player.weapon {
-            let (new_mesh, new_mat) = viewmodel_placeholder(player.weapon, &mut meshes, &mut mats);
-            mesh.0 = new_mesh;
-            mat.0 = new_mat;
-            vm.weapon = player.weapon;
-        }
+    let bob_x = (vm.bob_phase * 2.0).cos() * 4.0 * (speed * 0.08).min(1.0);
+    let bob_y = (vm.bob_phase * 4.0).sin().abs() * 6.0 * (speed * 0.08).min(1.0);
 
-        if player.hp <= 0 || dead.is_some() {
-            t.translation = Vec3::new(0.0, -3.0, 0.0);
-            continue;
-        }
+    let reload_t = if vm.reload > 0.0 {
+        1.0 - vm.reload / 0.65
+    } else {
+        0.0
+    };
+    let reload_curve = (reload_t * PI).sin().max(0.0);
 
-        let bob = Vec3::new(
-            (vm.bob_phase * 2.0).cos() * 0.01,
-            (vm.bob_phase * 4.0).sin().abs() * 0.018,
-            0.0,
-        ) * (speed * 0.08).min(1.0);
+    node.right = Val::Px(56.0 - vm.sway.x * 26.0 - bob_x - reload_curve * 22.0);
+    node.bottom = Val::Px(18.0 - vm.sway.y * 20.0 + bob_y - vm.recoil * 32.0 - reload_curve * 34.0);
 
-        let reload_t = if vm.reload > 0.0 {
-            1.0 - vm.reload / 0.65
-        } else {
-            0.0
-        };
-        let reload_curve = (reload_t * PI).sin().max(0.0);
-        let reload_off = Vec3::new(0.09, -0.2, 0.05) * reload_curve;
-
-        let sway_off = Vec3::new(vm.sway.x * 0.04, -vm.sway.y * 0.03, 0.0);
-        let recoil_off = Vec3::new(0.0, -vm.recoil * 0.035, vm.recoil * 0.16);
-
-        t.translation = Vec3::new(0.33, -0.28, -0.55) + bob + sway_off + recoil_off + reload_off;
-        t.rotation = Quat::from_euler(
-            EulerRot::XYZ,
-            -0.2 + vm.sway.y * 0.2,
-            -0.35 + vm.recoil * 0.15,
-            0.08 + vm.sway.x * 0.35 - reload_curve * 0.75,
-        );
-    }
+    color.0 = if vm.reload > 0.0 {
+        Color::srgb(0.78, 0.78, 0.78)
+    } else {
+        Color::srgb(0.93, 0.93, 0.93)
+    };
 }
 
 fn touches_solid(eye: Vec3, map: &ArenaMap, crouched: bool) -> bool {
@@ -526,44 +508,6 @@ fn respawn(
         rt.translation = Vec3::from_array(s);
         rp.hp = 100;
     }
-}
-
-fn viewmodel_placeholder(
-    weapon: WeaponKind,
-    meshes: &mut Assets<Mesh>,
-    mats: &mut Assets<StandardMaterial>,
-) -> (Handle<Mesh>, Handle<StandardMaterial>) {
-    let (mesh, color) = match weapon {
-        WeaponKind::HeavyPistol => (
-            Mesh::from(Cuboid::from_size(Vec3::new(0.18, 0.11, 0.45))),
-            Color::srgb(0.34, 0.34, 0.39),
-        ),
-        WeaponKind::Smg => (
-            Mesh::from(Cuboid::from_size(Vec3::new(0.16, 0.15, 0.62))),
-            Color::srgb(0.27, 0.31, 0.36),
-        ),
-        WeaponKind::AssaultRifle => (
-            Mesh::from(Cuboid::from_size(Vec3::new(0.18, 0.14, 0.8))),
-            Color::srgb(0.24, 0.29, 0.24),
-        ),
-        WeaponKind::SniperRifle => (
-            Mesh::from(Cuboid::from_size(Vec3::new(0.14, 0.12, 1.05))),
-            Color::srgb(0.2, 0.22, 0.18),
-        ),
-        WeaponKind::RocketLauncher => (
-            Mesh::from(Capsule3d::new(0.1, 0.8)),
-            Color::srgb(0.42, 0.3, 0.21),
-        ),
-    };
-    (
-        meshes.add(mesh),
-        mats.add(StandardMaterial {
-            base_color: color,
-            perceptual_roughness: 0.85,
-            metallic: 0.1,
-            ..default()
-        }),
-    )
 }
 
 fn shortest_angle_delta(now: f32, before: f32) -> f32 {

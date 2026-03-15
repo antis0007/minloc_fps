@@ -1,3 +1,5 @@
+use std::f32::consts::PI;
+
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
 
@@ -9,6 +11,8 @@ use crate::weapon::{WeaponKind, slot_weapon};
 pub struct LocalPlayer;
 #[derive(Component)]
 pub struct RemotePlayer;
+#[derive(Component)]
+pub struct ViewModelMesh;
 #[derive(Component, Default)]
 pub struct Velocity(pub Vec3);
 #[derive(Component)]
@@ -37,6 +41,30 @@ pub struct Player {
     pub weapon: WeaponKind,
 }
 
+#[derive(Component)]
+pub struct ViewModelState {
+    pub weapon: WeaponKind,
+    pub sway: Vec2,
+    pub bob_phase: f32,
+    pub recoil: f32,
+    pub reload: f32,
+    pub last_yaw: f32,
+    pub last_pitch: f32,
+}
+impl ViewModelState {
+    fn new(weapon: WeaponKind) -> Self {
+        Self {
+            weapon,
+            sway: Vec2::ZERO,
+            bob_phase: 0.0,
+            recoil: 0.0,
+            reload: 0.0,
+            last_yaw: 0.0,
+            last_pitch: 0.0,
+        }
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct LookState {
     pub yaw: f32,
@@ -51,11 +79,23 @@ impl Plugin for PlayerPlugin {
             .add_systems(OnEnter(GameState::MainMenu), cleanup_players)
             .add_systems(
                 Update,
-                (ensure_local_player, ensure_remote_player).run_if(in_state(GameState::InGame)),
+                (
+                    ensure_local_player,
+                    ensure_remote_player,
+                    ensure_viewmodel_mesh,
+                )
+                    .run_if(in_state(GameState::InGame)),
             )
             .add_systems(
                 Update,
-                (mouse_look, movement, choose_weapon, update_remote, respawn)
+                (
+                    mouse_look,
+                    movement,
+                    choose_weapon,
+                    animate_viewmodel,
+                    update_remote,
+                    respawn,
+                )
                     .chain()
                     .run_if(in_state(GameState::InGame)),
             );
@@ -64,7 +104,7 @@ impl Plugin for PlayerPlugin {
 
 fn cleanup_players(
     mut commands: Commands,
-    q: Query<Entity, Or<(With<LocalPlayer>, With<RemotePlayer>)>>,
+    q: Query<Entity, Or<(With<LocalPlayer>, With<RemotePlayer>, With<ViewModelMesh>)>>,
     mut look: ResMut<LookState>,
 ) {
     for e in &q {
@@ -87,17 +127,44 @@ fn ensure_local_player(
         .first()
         .map(|s| s.pos)
         .unwrap_or([0.0, 1.5, 0.0]);
+    let weapon = slot_weapon(cfg.selected_weapon);
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(p[0], p[1], p[2]),
         LocalPlayer,
-        Player {
-            hp: 100,
-            weapon: slot_weapon(cfg.selected_weapon),
-        },
+        Player { hp: 100, weapon },
+        ViewModelState::new(weapon),
         Velocity::default(),
         MoveState::default(),
     ));
+}
+
+fn ensure_viewmodel_mesh(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    local: Query<(Entity, &ViewModelState, Option<&Children>), With<LocalPlayer>>,
+    vm_q: Query<(), With<ViewModelMesh>>,
+) {
+    let Ok((e, vm, children)) = local.single() else {
+        return;
+    };
+    if let Some(children) = children {
+        for c in children.iter() {
+            if vm_q.get(c).is_ok() {
+                return;
+            }
+        }
+    }
+    let (mesh, material) = viewmodel_placeholder(vm.weapon, &mut meshes, &mut mats);
+    commands.entity(e).with_children(|parent| {
+        parent.spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            Transform::from_xyz(0.33, -0.28, -0.55),
+            ViewModelMesh,
+        ));
+    });
 }
 
 fn ensure_remote_player(
@@ -244,6 +311,97 @@ fn movement(
     }
 }
 
+fn animate_viewmodel(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    look: Res<LookState>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut local: Query<
+        (
+            &Player,
+            &Velocity,
+            Option<&RespawnTimer>,
+            &mut ViewModelState,
+            &Children,
+        ),
+        With<LocalPlayer>,
+    >,
+    mut vm_q: Query<
+        (
+            &mut Transform,
+            &mut Mesh3d,
+            &mut MeshMaterial3d<StandardMaterial>,
+        ),
+        With<ViewModelMesh>,
+    >,
+) {
+    let Ok((player, velocity, dead, mut vm, children)) = local.single_mut() else {
+        return;
+    };
+    if keys.just_pressed(KeyCode::KeyR) && vm.reload <= 0.0 {
+        vm.reload = 0.65;
+    }
+    vm.reload = (vm.reload - time.delta_secs()).max(0.0);
+    vm.recoil = (vm.recoil - time.delta_secs() * 5.0).max(0.0);
+
+    let dyaw = shortest_angle_delta(look.yaw, vm.last_yaw);
+    let dpitch = look.pitch - vm.last_pitch;
+    vm.last_yaw = look.yaw;
+    vm.last_pitch = look.pitch;
+    let target_sway = Vec2::new(
+        (dyaw * 16.0).clamp(-1.0, 1.0),
+        (dpitch * 12.0).clamp(-1.0, 1.0),
+    );
+    let sway_now = vm.sway;
+    vm.sway = sway_now + (target_sway - sway_now) * (time.delta_secs() * 16.0).min(1.0);
+
+    let speed = Vec2::new(velocity.0.x, velocity.0.z).length();
+    vm.bob_phase += time.delta_secs() * (2.2 + speed * 0.35);
+
+    for c in children.iter() {
+        let Ok((mut t, mut mesh, mut mat)) = vm_q.get_mut(c) else {
+            continue;
+        };
+        if vm.weapon != player.weapon {
+            let (new_mesh, new_mat) = viewmodel_placeholder(player.weapon, &mut meshes, &mut mats);
+            mesh.0 = new_mesh;
+            mat.0 = new_mat;
+            vm.weapon = player.weapon;
+        }
+
+        if player.hp <= 0 || dead.is_some() {
+            t.translation = Vec3::new(0.0, -3.0, 0.0);
+            continue;
+        }
+
+        let bob = Vec3::new(
+            (vm.bob_phase * 2.0).cos() * 0.01,
+            (vm.bob_phase * 4.0).sin().abs() * 0.018,
+            0.0,
+        ) * (speed * 0.08).min(1.0);
+
+        let reload_t = if vm.reload > 0.0 {
+            1.0 - vm.reload / 0.65
+        } else {
+            0.0
+        };
+        let reload_curve = (reload_t * PI).sin().max(0.0);
+        let reload_off = Vec3::new(0.09, -0.2, 0.05) * reload_curve;
+
+        let sway_off = Vec3::new(vm.sway.x * 0.04, -vm.sway.y * 0.03, 0.0);
+        let recoil_off = Vec3::new(0.0, -vm.recoil * 0.035, vm.recoil * 0.16);
+
+        t.translation = Vec3::new(0.33, -0.28, -0.55) + bob + sway_off + recoil_off + reload_off;
+        t.rotation = Quat::from_euler(
+            EulerRot::XYZ,
+            -0.2 + vm.sway.y * 0.2,
+            -0.35 + vm.recoil * 0.15,
+            0.08 + vm.sway.x * 0.35 - reload_curve * 0.75,
+        );
+    }
+}
+
 fn touches_solid(eye: Vec3, map: &ArenaMap, crouched: bool) -> bool {
     map.solids
         .iter()
@@ -324,16 +482,18 @@ fn respawn(
             Entity,
             &mut Transform,
             &mut Player,
+            &mut ViewModelState,
             Option<&mut RespawnTimer>,
         ),
         With<LocalPlayer>,
     >,
     mut remote: Query<(&mut Transform, &mut Player), (With<RemotePlayer>, Without<LocalPlayer>)>,
 ) {
-    let Ok((e, mut t, mut p, timer)) = local.single_mut() else {
+    let Ok((e, mut t, mut p, mut vm, timer)) = local.single_mut() else {
         return;
     };
     if p.hp <= 0 {
+        vm.reload = 0.0;
         if let Some(mut timer) = timer {
             timer.0 -= time.delta_secs();
             if timer.0 <= 0.0 {
@@ -345,6 +505,8 @@ fn respawn(
                 t.translation = Vec3::from_array(s);
                 p.hp = 100;
                 p.weapon = slot_weapon(cfg.selected_weapon);
+                vm.weapon = p.weapon;
+                vm.recoil = 0.0;
                 commands.entity(e).remove::<RespawnTimer>();
             }
         } else {
@@ -364,4 +526,46 @@ fn respawn(
         rt.translation = Vec3::from_array(s);
         rp.hp = 100;
     }
+}
+
+fn viewmodel_placeholder(
+    weapon: WeaponKind,
+    meshes: &mut Assets<Mesh>,
+    mats: &mut Assets<StandardMaterial>,
+) -> (Handle<Mesh>, Handle<StandardMaterial>) {
+    let (mesh, color) = match weapon {
+        WeaponKind::HeavyPistol => (
+            Mesh::from(Cuboid::from_size(Vec3::new(0.18, 0.11, 0.45))),
+            Color::srgb(0.34, 0.34, 0.39),
+        ),
+        WeaponKind::Smg => (
+            Mesh::from(Cuboid::from_size(Vec3::new(0.16, 0.15, 0.62))),
+            Color::srgb(0.27, 0.31, 0.36),
+        ),
+        WeaponKind::AssaultRifle => (
+            Mesh::from(Cuboid::from_size(Vec3::new(0.18, 0.14, 0.8))),
+            Color::srgb(0.24, 0.29, 0.24),
+        ),
+        WeaponKind::SniperRifle => (
+            Mesh::from(Cuboid::from_size(Vec3::new(0.14, 0.12, 1.05))),
+            Color::srgb(0.2, 0.22, 0.18),
+        ),
+        WeaponKind::RocketLauncher => (
+            Mesh::from(Capsule3d::new(0.1, 0.8)),
+            Color::srgb(0.42, 0.3, 0.21),
+        ),
+    };
+    (
+        meshes.add(mesh),
+        mats.add(StandardMaterial {
+            base_color: color,
+            perceptual_roughness: 0.85,
+            metallic: 0.1,
+            ..default()
+        }),
+    )
+}
+
+fn shortest_angle_delta(now: f32, before: f32) -> f32 {
+    ((now - before) + PI).rem_euclid(2.0 * PI) - PI
 }

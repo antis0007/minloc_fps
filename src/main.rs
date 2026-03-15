@@ -1,5 +1,5 @@
-use bevy::prelude::*;
 use bevy::camera::ClearColorConfig;
+use bevy::prelude::*;
 
 mod app_state;
 mod arena;
@@ -28,7 +28,10 @@ use weapon::WeaponPlugin;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window { title: "Micro FPS".into(), ..default() }),
+            primary_window: Some(Window {
+                title: "Micro FPS".into(),
+                ..default()
+            }),
             ..default()
         }))
         .add_plugins(bevy_egui::EguiPlugin::default())
@@ -53,7 +56,7 @@ fn setup_ui_camera(mut commands: Commands) {
     commands.spawn((
         Camera2d,
         Camera {
-            order: 1,
+            order: 2,
             clear_color: ClearColorConfig::None,
             ..default()
         },

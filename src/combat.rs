@@ -1,0 +1,58 @@
+use bevy::prelude::*;
+
+use crate::app_state::GameState;
+use crate::player::{LocalPlayer, LookState, Player, RemotePlayer};
+use crate::projectile::spawn_rocket;
+use crate::weapon::{auto_fire, damage, fire_interval, is_projectile, recoil, weapon_name, Cooldown};
+
+pub struct CombatPlugin;
+impl Plugin for CombatPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, ensure_cooldown)
+            .add_systems(Update, fire.run_if(in_state(GameState::InGame)));
+    }
+}
+
+fn ensure_cooldown(mut commands: Commands, q: Query<Entity, (With<Player>, Without<Cooldown>)>) {
+    for e in &q {
+        commands.entity(e).insert(Cooldown::default());
+    }
+}
+
+fn fire(
+    buttons: Res<ButtonInput<MouseButton>>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut look: ResMut<LookState>,
+    mut local: Query<
+        (&Transform, &Player, &mut Cooldown),
+        (With<LocalPlayer>, Without<RemotePlayer>),
+    >,
+    mut remote: Query<
+        (&Transform, &mut Player),
+        (With<RemotePlayer>, Without<LocalPlayer>),
+    >,
+) {
+    let Ok((t, p, mut cd)) = local.single_mut() else { return; };
+    if !buttons.pressed(MouseButton::Left) || cd.0 > 0.0 || p.hp <= 0 {
+        return;
+    }
+
+    cd.0 = fire_interval(p.weapon);
+    look.kick += recoil(p.weapon);
+    println!("synth shot: {}", weapon_name(p.weapon));
+
+    let d = damage(p.weapon);
+    let dir = t.forward().as_vec3();
+    if is_projectile(p.weapon) {
+        spawn_rocket(&mut commands, &mut meshes, &mut materials, t.translation + dir * 0.8, dir, d);
+    } else {
+        for (rt, mut rp) in &mut remote {
+            let to = rt.translation - t.translation;
+            if rp.hp > 0 && to.length_squared() < 6400.0 && dir.dot(to.normalize_or_zero()) > 0.995 {
+                rp.hp -= d;
+            }
+        }
+    }
+}

@@ -1,0 +1,18 @@
+[package]
+name = "micro_fps"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.18", default-features = false, features = ["bevy_winit", "bevy_render", "bevy_core_pipeline", "bevy_pbr", "bevy_ui", "bevy_text", "bevy_state", "bevy_log", "x11", "png", "tonemapping_luts"] }
+bevy_egui = "0.39"
+serde = { version = "1", features = ["derive"] }
+ron = "0.10"
+anyhow = "1"
+
+[profile.dev]
+incremental = true
+opt-level = 0
+debug = 1
+codegen-units = 256
+lto = "off"

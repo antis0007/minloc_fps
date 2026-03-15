@@ -11,6 +11,11 @@ pub struct ArenaPlugin;
 impl Plugin for ArenaPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ClearColor(Color::srgb(0.04, 0.05, 0.07)))
+            .insert_resource(GlobalAmbientLight {
+                color: Color::WHITE,
+                brightness: 300.0,
+                affects_lightmapped_meshes: true,
+            })
             .add_systems(
                 Update,
                 (setup_scene, spawn_arena).run_if(in_state(GameState::InGame)),
@@ -20,7 +25,7 @@ impl Plugin for ArenaPlugin {
     }
 }
 
-fn setup_scene(mut commands: Commands, q: Query<(), With<DirectionalLight>>) {
+fn setup_scene(mut commands: Commands, q: Query<(), (With<DirectionalLight>, With<ArenaEntity>)>) {
     if !q.is_empty() {
         return;
     }
@@ -40,7 +45,7 @@ fn spawn_arena(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     map: Res<ArenaMap>,
-    q: Query<(), With<ArenaEntity>>,
+    q: Query<(), (With<ArenaEntity>, With<Mesh3d>)>,
 ) {
     if !q.is_empty() {
         return;

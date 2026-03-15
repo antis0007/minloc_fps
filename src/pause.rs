@@ -1,6 +1,6 @@
 use bevy::input::ButtonInput;
 use bevy::prelude::*;
-use bevy_egui::{EguiContexts, egui};
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 use crate::app_state::GameState;
 
@@ -8,7 +8,7 @@ pub struct PausePlugin;
 impl Plugin for PausePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, toggle_pause)
-            .add_systems(Update, pause_ui.run_if(in_state(GameState::Paused)));
+            .add_systems(EguiPrimaryContextPass, pause_ui.run_if(in_state(GameState::Paused)));
     }
 }
 
@@ -26,11 +26,10 @@ fn toggle_pause(
     }
 }
 
-fn pause_ui(mut ctx: EguiContexts, mut next: ResMut<NextState<GameState>>) {
-    let Ok(ctx) = ctx.ctx_mut() else { return };
+fn pause_ui(mut ctx: EguiContexts, mut next: ResMut<NextState<GameState>>) -> Result {
     egui::Window::new("Paused")
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
+        .show(ctx.ctx_mut()?, |ui| {
             if ui.button("Resume").clicked() {
                 next.set(GameState::InGame);
             }
@@ -38,4 +37,5 @@ fn pause_ui(mut ctx: EguiContexts, mut next: ResMut<NextState<GameState>>) {
                 next.set(GameState::MainMenu);
             }
         });
+    Ok(())
 }

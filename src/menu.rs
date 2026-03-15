@@ -1,12 +1,12 @@
 use bevy::prelude::*;
-use bevy_egui::{egui, EguiContexts};
+use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
 use crate::app_state::{GameState, SessionConfig};
 
 pub struct MenuPlugin;
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, menu_ui.run_if(in_state(GameState::MainMenu)));
+        app.add_systems(EguiPrimaryContextPass, menu_ui.run_if(in_state(GameState::MainMenu)));
     }
 }
 
@@ -14,9 +14,8 @@ fn menu_ui(
     mut ctx: EguiContexts,
     mut next: ResMut<NextState<GameState>>,
     mut cfg: ResMut<SessionConfig>,
-) {
-    let Ok(ctx) = ctx.ctx_mut() else { return };
-    egui::CentralPanel::default().show(ctx, |ui| {
+) -> Result {
+    egui::CentralPanel::default().show(ctx.ctx_mut()?, |ui| {
         ui.vertical_centered(|ui| {
             ui.add_space(80.0);
             ui.heading("Micro FPS");
@@ -44,4 +43,5 @@ fn menu_ui(
             ui.label("Press 1-5 to choose weapon, LMB to fire.");
         });
     });
+    Ok(())
 }

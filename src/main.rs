@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::camera::ClearColorConfig;
 
 mod app_state;
 mod arena;
@@ -31,6 +32,7 @@ fn main() {
             ..default()
         }))
         .add_plugins(bevy_egui::EguiPlugin::default())
+        .add_systems(Startup, setup_ui_camera)
         .add_plugins((
             AppStatePlugin,
             MenuPlugin,
@@ -45,4 +47,15 @@ fn main() {
             HudPlugin,
         ))
         .run();
+}
+
+fn setup_ui_camera(mut commands: Commands) {
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 1,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+    ));
 }

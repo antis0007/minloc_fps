@@ -3,7 +3,7 @@ use bevy::prelude::*;
 
 use crate::app_state::{GameState, SessionConfig};
 use crate::map::{ArenaMap, Solid};
-use crate::weapon::{slot_weapon, WeaponKind};
+use crate::weapon::{WeaponKind, slot_weapon};
 
 #[derive(Component)]
 pub struct LocalPlayer;
@@ -231,19 +231,23 @@ fn movement(
         v.0.y = 0.0;
     }
 
-    if !crouch {
+    if m.crouched && !crouch {
         let stand_y = t.translation.y + (stand_eye_offset() - crouch_eye_offset());
-        if !touches_solid(Vec3::new(t.translation.x, stand_y, t.translation.z), &map, false) {
+        if !touches_solid(
+            Vec3::new(t.translation.x, stand_y, t.translation.z),
+            &map,
+            false,
+        ) {
             t.translation.y = stand_y;
             m.crouched = false;
-        } else {
-            m.crouched = true;
         }
     }
 }
 
 fn touches_solid(eye: Vec3, map: &ArenaMap, crouched: bool) -> bool {
-    map.solids.iter().any(|s| capsule_hits_solid(eye, s, crouched))
+    map.solids
+        .iter()
+        .any(|s| capsule_hits_solid(eye, s, crouched))
 }
 
 fn capsule_hits_solid(eye: Vec3, s: &Solid, crouched: bool) -> bool {

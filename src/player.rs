@@ -34,15 +34,12 @@ impl Plugin for PlayerPlugin {
             .add_systems(OnEnter(GameState::MainMenu), cleanup_players)
             .add_systems(
                 Update,
-                (
-                    ensure_local_player,
-                    ensure_remote_player,
-                    mouse_look,
-                    movement,
-                    choose_weapon,
-                    update_remote,
-                    respawn,
-                )
+                (ensure_local_player, ensure_remote_player).run_if(in_state(GameState::InGame)),
+            )
+            .add_systems(
+                Update,
+                (mouse_look, movement, choose_weapon, update_remote, respawn)
+                    .chain()
                     .run_if(in_state(GameState::InGame)),
             );
     }
@@ -68,12 +65,19 @@ fn ensure_local_player(
     if !q.is_empty() {
         return;
     }
-    let p = map.spawn_points.first().map(|s| s.pos).unwrap_or([0.0, 1.5, 0.0]);
+    let p = map
+        .spawn_points
+        .first()
+        .map(|s| s.pos)
+        .unwrap_or([0.0, 1.5, 0.0]);
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(p[0], p[1], p[2]),
         LocalPlayer,
-        Player { hp: 100, weapon: slot_weapon(cfg.selected_weapon) },
+        Player {
+            hp: 100,
+            weapon: slot_weapon(cfg.selected_weapon),
+        },
         Velocity::default(),
     ));
 }
@@ -88,13 +92,20 @@ fn ensure_remote_player(
     if !q.is_empty() {
         return;
     }
-    let p = map.spawn_points.get(1).map(|s| s.pos).unwrap_or([6.0, 1.5, 0.0]);
+    let p = map
+        .spawn_points
+        .get(1)
+        .map(|s| s.pos)
+        .unwrap_or([6.0, 1.5, 0.0]);
     commands.spawn((
         Mesh3d(meshes.add(Mesh::from(Capsule3d::new(0.35, 1.0)))),
         MeshMaterial3d(mats.add(Color::srgb(0.85, 0.2, 0.2))),
         Transform::from_xyz(p[0], p[1], p[2]),
         RemotePlayer,
-        Player { hp: 100, weapon: WeaponKind::AssaultRifle },
+        Player {
+            hp: 100,
+            weapon: WeaponKind::AssaultRifle,
+        },
     ));
 }
 
@@ -109,8 +120,7 @@ fn mouse_look(
     let pitch = (look.pitch + look.kick).clamp(-1.54, 1.54);
     look.kick *= 0.85;
     let Ok(mut t) = q.single_mut() else { return };
-    t.rotation = Quat::from_axis_angle(Vec3::Y, look.yaw)
-        * Quat::from_axis_angle(Vec3::X, pitch);
+    t.rotation = Quat::from_axis_angle(Vec3::Y, look.yaw) * Quat::from_axis_angle(Vec3::X, pitch);
 }
 
 fn movement(
@@ -119,19 +129,33 @@ fn movement(
     map: Res<ArenaMap>,
     mut q: Query<(&mut Transform, &mut Velocity), (With<LocalPlayer>, Without<RespawnTimer>)>,
 ) {
-    let Ok((mut t, mut v)) = q.single_mut() else { return };
+    let Ok((mut t, mut v)) = q.single_mut() else {
+        return;
+    };
     let mut input = Vec3::ZERO;
-    if keys.pressed(KeyCode::KeyW) { input.z -= 1.0; }
-    if keys.pressed(KeyCode::KeyS) { input.z += 1.0; }
-    if keys.pressed(KeyCode::KeyA) { input.x -= 1.0; }
-    if keys.pressed(KeyCode::KeyD) { input.x += 1.0; }
+    if keys.pressed(KeyCode::KeyW) {
+        input.z -= 1.0;
+    }
+    if keys.pressed(KeyCode::KeyS) {
+        input.z += 1.0;
+    }
+    if keys.pressed(KeyCode::KeyA) {
+        input.x -= 1.0;
+    }
+    if keys.pressed(KeyCode::KeyD) {
+        input.x += 1.0;
+    }
 
     let f = t.forward().as_vec3();
     let r = t.right().as_vec3();
     let wish = (Vec3::new(f.x, 0.0, f.z) * -input.z + Vec3::new(r.x, 0.0, r.z) * input.x)
         .normalize_or_zero();
 
-    let speed = if keys.pressed(KeyCode::ShiftLeft) { 10.0 } else { 7.0 };
+    let speed = if keys.pressed(KeyCode::ShiftLeft) {
+        10.0
+    } else {
+        7.0
+    };
     v.0.x = wish.x * speed;
     v.0.z = wish.z * speed;
     v.0.y -= 20.0 * time.delta_secs();
@@ -180,10 +204,14 @@ fn choose_weapon(
     p.weapon = slot_weapon(slot);
 }
 
-fn update_remote(time: Res<Time>, mut q: Query<&mut Transform, With<RemotePlayer>>) {
-    let Ok(mut t) = q.single_mut() else { return };
-    t.translation.x = 6.0 + (time.elapsed_secs() * 0.8).sin() * 3.0;
-    t.translation.z = (time.elapsed_secs() * 0.5).cos() * 2.0;
+fn update_remote(time: Res<Time>, mut q: Query<(&mut Transform, &mut Player), With<RemotePlayer>>) {
+    let Ok((mut t, p)) = q.single_mut() else {
+        return;
+    };
+    if p.hp > 0 {
+        t.translation.x = 6.0 + (time.elapsed_secs() * 0.8).sin() * 3.0;
+        t.translation.z = (time.elapsed_secs() * 0.5).cos() * 2.0;
+    }
 }
 
 fn respawn(
@@ -191,22 +219,49 @@ fn respawn(
     cfg: Res<SessionConfig>,
     map: Res<ArenaMap>,
     mut commands: Commands,
-    mut q: Query<(Entity, &mut Transform, &mut Player, Option<&mut RespawnTimer>), With<LocalPlayer>>,
+    mut local: Query<
+        (
+            Entity,
+            &mut Transform,
+            &mut Player,
+            Option<&mut RespawnTimer>,
+        ),
+        With<LocalPlayer>,
+    >,
+    mut remote: Query<(&mut Transform, &mut Player), (With<RemotePlayer>, Without<LocalPlayer>)>,
 ) {
-    let Ok((e, mut t, mut p, timer)) = q.single_mut() else { return };
-    if p.hp > 0 {
+    let Ok((e, mut t, mut p, timer)) = local.single_mut() else {
         return;
-    }
-    if let Some(mut timer) = timer {
-        timer.0 -= time.delta_secs();
-        if timer.0 <= 0.0 {
-            let s = map.spawn_points.first().map(|p| p.pos).unwrap_or([0.0, 1.5, 0.0]);
-            t.translation = Vec3::from_array(s);
-            p.hp = 100;
-            p.weapon = slot_weapon(cfg.selected_weapon);
-            commands.entity(e).remove::<RespawnTimer>();
+    };
+    if p.hp <= 0 {
+        if let Some(mut timer) = timer {
+            timer.0 -= time.delta_secs();
+            if timer.0 <= 0.0 {
+                let s = map
+                    .spawn_points
+                    .first()
+                    .map(|p| p.pos)
+                    .unwrap_or([0.0, 1.5, 0.0]);
+                t.translation = Vec3::from_array(s);
+                p.hp = 100;
+                p.weapon = slot_weapon(cfg.selected_weapon);
+                commands.entity(e).remove::<RespawnTimer>();
+            }
+        } else {
+            commands.entity(e).insert(RespawnTimer(3.0));
         }
-    } else {
-        commands.entity(e).insert(RespawnTimer(3.0));
+    }
+
+    let Ok((mut rt, mut rp)) = remote.single_mut() else {
+        return;
+    };
+    if rp.hp <= 0 {
+        let s = map
+            .spawn_points
+            .get(1)
+            .map(|p| p.pos)
+            .unwrap_or([8.0, 1.5, 0.0]);
+        rt.translation = Vec3::from_array(s);
+        rp.hp = 100;
     }
 }

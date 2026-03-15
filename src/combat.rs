@@ -3,7 +3,9 @@ use bevy::prelude::*;
 use crate::app_state::GameState;
 use crate::player::{LocalPlayer, LookState, Player, RemotePlayer};
 use crate::projectile::spawn_rocket;
-use crate::weapon::{auto_fire, damage, fire_interval, is_projectile, recoil, weapon_name, Cooldown};
+use crate::weapon::{
+    auto_fire, damage, fire_interval, is_projectile, recoil, weapon_name, Cooldown,
+};
 
 pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
@@ -29,13 +31,17 @@ fn fire(
         (&Transform, &Player, &mut Cooldown),
         (With<LocalPlayer>, Without<RemotePlayer>),
     >,
-    mut remote: Query<
-        (&Transform, &mut Player),
-        (With<RemotePlayer>, Without<LocalPlayer>),
-    >,
+    mut remote: Query<(&Transform, &mut Player), (With<RemotePlayer>, Without<LocalPlayer>)>,
 ) {
-    let Ok((t, p, mut cd)) = local.single_mut() else { return; };
-    if !buttons.pressed(MouseButton::Left) || cd.0 > 0.0 || p.hp <= 0 {
+    let Ok((t, p, mut cd)) = local.single_mut() else {
+        return;
+    };
+    let wants_shot = if auto_fire(p.weapon) {
+        buttons.pressed(MouseButton::Left)
+    } else {
+        buttons.just_pressed(MouseButton::Left)
+    };
+    if !wants_shot || cd.0 > 0.0 || p.hp <= 0 {
         return;
     }
 
@@ -46,11 +52,19 @@ fn fire(
     let d = damage(p.weapon);
     let dir = t.forward().as_vec3();
     if is_projectile(p.weapon) {
-        spawn_rocket(&mut commands, &mut meshes, &mut materials, t.translation + dir * 0.8, dir, d);
+        spawn_rocket(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            t.translation + dir * 0.8,
+            dir,
+            d,
+        );
     } else {
         for (rt, mut rp) in &mut remote {
             let to = rt.translation - t.translation;
-            if rp.hp > 0 && to.length_squared() < 6400.0 && dir.dot(to.normalize_or_zero()) > 0.995 {
+            if rp.hp > 0 && to.length_squared() < 6400.0 && dir.dot(to.normalize_or_zero()) > 0.995
+            {
                 rp.hp -= d;
             }
         }

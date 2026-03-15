@@ -1,5 +1,6 @@
 use bevy::input::ButtonInput;
 use bevy::prelude::*;
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow, WindowFocused};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 use crate::app_state::GameState;
@@ -7,8 +8,23 @@ use crate::app_state::GameState;
 pub struct PausePlugin;
 impl Plugin for PausePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, toggle_pause)
+        app.init_resource::<WindowFocus>()
+            .add_systems(Update, (track_focus, toggle_pause, sync_cursor))
             .add_systems(EguiPrimaryContextPass, pause_ui.run_if(in_state(GameState::Paused)));
+    }
+}
+
+#[derive(Resource)]
+struct WindowFocus(pub bool);
+impl Default for WindowFocus {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+fn track_focus(mut ev: MessageReader<WindowFocused>, mut focus: ResMut<WindowFocus>) {
+    for e in ev.read() {
+        focus.0 = e.focused;
     }
 }
 
@@ -24,6 +40,24 @@ fn toggle_pause(
             _ => {}
         }
     }
+}
+
+fn sync_cursor(
+    state: Res<State<GameState>>,
+    focus: Res<WindowFocus>,
+    mut q: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
+) {
+    let Ok((mut window, mut cursor)) = q.single_mut() else {
+        return;
+    };
+    let lock = *state.get() == GameState::InGame && focus.0;
+    cursor.visible = !lock;
+    cursor.grab_mode = if lock {
+        CursorGrabMode::Locked
+    } else {
+        CursorGrabMode::None
+    };
+    window.ime_enabled = !lock;
 }
 
 fn pause_ui(mut ctx: EguiContexts, mut next: ResMut<NextState<GameState>>) -> Result {

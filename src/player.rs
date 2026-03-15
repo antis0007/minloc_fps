@@ -12,6 +12,23 @@ pub struct RemotePlayer;
 #[derive(Component, Default)]
 pub struct Velocity(pub Vec3);
 #[derive(Component)]
+pub struct MoveState {
+    pub grounded: bool,
+    pub crouched: bool,
+    pub jump_buffer: f32,
+    pub coyote: f32,
+}
+impl Default for MoveState {
+    fn default() -> Self {
+        Self {
+            grounded: false,
+            crouched: false,
+            jump_buffer: 0.0,
+            coyote: 0.0,
+        }
+    }
+}
+#[derive(Component)]
 pub struct RespawnTimer(pub f32);
 
 #[derive(Component)]
@@ -79,6 +96,7 @@ fn ensure_local_player(
             weapon: slot_weapon(cfg.selected_weapon),
         },
         Velocity::default(),
+        MoveState::default(),
     ));
 }
 
@@ -127,11 +145,15 @@ fn movement(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     map: Res<ArenaMap>,
-    mut q: Query<(&mut Transform, &mut Velocity), (With<LocalPlayer>, Without<RespawnTimer>)>,
+    mut q: Query<
+        (&mut Transform, &mut Velocity, &mut MoveState),
+        (With<LocalPlayer>, Without<RespawnTimer>),
+    >,
 ) {
-    let Ok((mut t, mut v)) = q.single_mut() else {
+    let Ok((mut t, mut v, mut m)) = q.single_mut() else {
         return;
     };
+    let dt = time.delta_secs();
     let mut input = Vec3::ZERO;
     if keys.pressed(KeyCode::KeyW) {
         input.z -= 1.0;
@@ -151,34 +173,108 @@ fn movement(
     let wish = (Vec3::new(f.x, 0.0, f.z) * -input.z + Vec3::new(r.x, 0.0, r.z) * input.x)
         .normalize_or_zero();
 
-    let speed = if keys.pressed(KeyCode::ShiftLeft) {
+    let crouch = keys.pressed(KeyCode::ControlLeft)
+        || keys.pressed(KeyCode::ControlRight)
+        || keys.pressed(KeyCode::KeyC);
+    m.crouched = crouch;
+
+    let speed = if crouch {
+        4.0
+    } else if keys.pressed(KeyCode::ShiftLeft) {
         10.0
     } else {
         7.0
     };
-    v.0.x = wish.x * speed;
-    v.0.z = wish.z * speed;
-    v.0.y -= 20.0 * time.delta_secs();
+    let accel = if m.grounded { 40.0 } else { 14.0 };
+    let target = wish * speed;
+    let blend = (accel * dt).min(1.0);
+    v.0.x += (target.x - v.0.x) * blend;
+    v.0.z += (target.z - v.0.z) * blend;
 
-    if t.translation.y <= 1.5 {
-        t.translation.y = 1.5;
-        v.0.y = 0.0;
-        if keys.just_pressed(KeyCode::Space) {
-            v.0.y = 7.5;
-        }
+    m.jump_buffer = (m.jump_buffer - dt).max(0.0);
+    m.coyote = (m.coyote - dt).max(0.0);
+    if keys.just_pressed(KeyCode::Space) {
+        m.jump_buffer = 0.12;
+    }
+    if m.grounded {
+        m.coyote = 0.1;
+    }
+    if m.jump_buffer > 0.0 && m.coyote > 0.0 {
+        m.jump_buffer = 0.0;
+        m.coyote = 0.0;
+        m.grounded = false;
+        v.0.y = 8.0;
     }
 
+    v.0.y -= 26.0 * dt;
+
     let old = t.translation;
-    t.translation += v.0 * time.delta_secs();
-    if map.solids.iter().any(|s| in_solid(t.translation, s)) {
-        t.translation = old;
+    t.translation.x += v.0.x * dt;
+    if touches_solid(t.translation, &map, m.crouched) {
+        t.translation.x = old.x;
+        v.0.x = 0.0;
+    }
+
+    t.translation.z += v.0.z * dt;
+    if touches_solid(t.translation, &map, m.crouched) {
+        t.translation.z = old.z;
+        v.0.z = 0.0;
+    }
+
+    t.translation.y += v.0.y * dt;
+    m.grounded = false;
+    if touches_solid(t.translation, &map, m.crouched) {
+        t.translation.y = old.y;
+        if v.0.y < 0.0 {
+            m.grounded = true;
+        }
+        v.0.y = 0.0;
+    }
+
+    if !crouch {
+        let stand_y = t.translation.y + (stand_eye_offset() - crouch_eye_offset());
+        if !touches_solid(Vec3::new(t.translation.x, stand_y, t.translation.z), &map, false) {
+            t.translation.y = stand_y;
+            m.crouched = false;
+        } else {
+            m.crouched = true;
+        }
     }
 }
 
-fn in_solid(p: Vec3, s: &Solid) -> bool {
-    let min = Vec3::from_array(s.min) + Vec3::splat(0.2);
-    let max = Vec3::from_array(s.max) - Vec3::splat(0.2);
-    p.cmpge(min).all() && p.cmple(max).all()
+fn touches_solid(eye: Vec3, map: &ArenaMap, crouched: bool) -> bool {
+    map.solids.iter().any(|s| capsule_hits_solid(eye, s, crouched))
+}
+
+fn capsule_hits_solid(eye: Vec3, s: &Solid, crouched: bool) -> bool {
+    let radius = 0.28;
+    let eye_to_feet = if crouched {
+        crouch_eye_offset()
+    } else {
+        stand_eye_offset()
+    };
+    let height = if crouched { 0.95 } else { 1.35 };
+    let foot = eye.y - eye_to_feet;
+    let head = foot + height;
+    let min = Vec3::from_array(s.min);
+    let max = Vec3::from_array(s.max);
+
+    if head <= min.y || foot >= max.y {
+        return false;
+    }
+    let cx = eye.x.clamp(min.x, max.x);
+    let cz = eye.z.clamp(min.z, max.z);
+    let dx = eye.x - cx;
+    let dz = eye.z - cz;
+    dx * dx + dz * dz <= radius * radius
+}
+
+fn stand_eye_offset() -> f32 {
+    0.5
+}
+
+fn crouch_eye_offset() -> f32 {
+    0.2
 }
 
 fn choose_weapon(

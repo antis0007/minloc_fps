@@ -1,14 +1,18 @@
+use std::f32::consts::PI;
+
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
 
 use crate::app_state::{GameState, SessionConfig};
 use crate::map::{ArenaMap, Solid};
-use crate::weapon::{WeaponKind, slot_weapon};
+use crate::weapon::{WeaponKind, slot_weapon, viewmodel_ascii};
 
 #[derive(Component)]
 pub struct LocalPlayer;
 #[derive(Component)]
 pub struct RemotePlayer;
+#[derive(Component)]
+pub struct ViewModelAscii;
 #[derive(Component, Default)]
 pub struct Velocity(pub Vec3);
 #[derive(Component)]
@@ -37,6 +41,30 @@ pub struct Player {
     pub weapon: WeaponKind,
 }
 
+#[derive(Component)]
+pub struct ViewModelState {
+    pub weapon: WeaponKind,
+    pub sway: Vec2,
+    pub bob_phase: f32,
+    pub recoil: f32,
+    pub reload: f32,
+    pub last_yaw: f32,
+    pub last_pitch: f32,
+}
+impl ViewModelState {
+    fn new(weapon: WeaponKind) -> Self {
+        Self {
+            weapon,
+            sway: Vec2::ZERO,
+            bob_phase: 0.0,
+            recoil: 0.0,
+            reload: 0.0,
+            last_yaw: 0.0,
+            last_pitch: 0.0,
+        }
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct LookState {
     pub yaw: f32,
@@ -51,11 +79,23 @@ impl Plugin for PlayerPlugin {
             .add_systems(OnEnter(GameState::MainMenu), cleanup_players)
             .add_systems(
                 Update,
-                (ensure_local_player, ensure_remote_player).run_if(in_state(GameState::InGame)),
+                (
+                    ensure_local_player,
+                    ensure_remote_player,
+                    ensure_viewmodel_ascii,
+                )
+                    .run_if(in_state(GameState::InGame)),
             )
             .add_systems(
                 Update,
-                (mouse_look, movement, choose_weapon, update_remote, respawn)
+                (
+                    mouse_look,
+                    movement,
+                    choose_weapon,
+                    animate_viewmodel,
+                    update_remote,
+                    respawn,
+                )
                     .chain()
                     .run_if(in_state(GameState::InGame)),
             );
@@ -64,7 +104,7 @@ impl Plugin for PlayerPlugin {
 
 fn cleanup_players(
     mut commands: Commands,
-    q: Query<Entity, Or<(With<LocalPlayer>, With<RemotePlayer>)>>,
+    q: Query<Entity, Or<(With<LocalPlayer>, With<RemotePlayer>, With<ViewModelAscii>)>>,
     mut look: ResMut<LookState>,
 ) {
     for e in &q {
@@ -87,16 +127,43 @@ fn ensure_local_player(
         .first()
         .map(|s| s.pos)
         .unwrap_or([0.0, 1.5, 0.0]);
+    let weapon = slot_weapon(cfg.selected_weapon);
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(p[0], p[1], p[2]),
         LocalPlayer,
-        Player {
-            hp: 100,
-            weapon: slot_weapon(cfg.selected_weapon),
-        },
+        Player { hp: 100, weapon },
+        ViewModelState::new(weapon),
         Velocity::default(),
         MoveState::default(),
+    ));
+}
+
+fn ensure_viewmodel_ascii(
+    mut commands: Commands,
+    local: Query<&ViewModelState, With<LocalPlayer>>,
+    q: Query<(), With<ViewModelAscii>>,
+) {
+    if !q.is_empty() {
+        return;
+    }
+    let Ok(vm) = local.single() else {
+        return;
+    };
+    commands.spawn((
+        Text::new(viewmodel_ascii(vm.weapon)),
+        TextFont {
+            font_size: 21.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.93, 0.93, 0.93)),
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(56.0),
+            bottom: Val::Px(18.0),
+            ..default()
+        },
+        ViewModelAscii,
     ));
 }
 
@@ -244,6 +311,79 @@ fn movement(
     }
 }
 
+fn animate_viewmodel(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    look: Res<LookState>,
+    mut local: Query<
+        (
+            &Player,
+            &Velocity,
+            Option<&RespawnTimer>,
+            &mut ViewModelState,
+        ),
+        With<LocalPlayer>,
+    >,
+    mut ascii: Query<(&mut Text, &mut Node, &mut TextColor), With<ViewModelAscii>>,
+) {
+    let Ok((player, velocity, dead, mut vm)) = local.single_mut() else {
+        return;
+    };
+    let Ok((mut text, mut node, mut color)) = ascii.single_mut() else {
+        return;
+    };
+
+    if keys.just_pressed(KeyCode::KeyR) && vm.reload <= 0.0 {
+        vm.reload = 0.65;
+    }
+    vm.reload = (vm.reload - time.delta_secs()).max(0.0);
+    vm.recoil = (vm.recoil - time.delta_secs() * 5.0).max(0.0);
+
+    if vm.weapon != player.weapon {
+        *text = Text::new(viewmodel_ascii(player.weapon));
+        vm.weapon = player.weapon;
+    }
+
+    if player.hp <= 0 || dead.is_some() {
+        node.display = Display::None;
+        return;
+    }
+    node.display = Display::Flex;
+
+    let dyaw = shortest_angle_delta(look.yaw, vm.last_yaw);
+    let dpitch = look.pitch - vm.last_pitch;
+    vm.last_yaw = look.yaw;
+    vm.last_pitch = look.pitch;
+    let target_sway = Vec2::new(
+        (dyaw * 16.0).clamp(-1.0, 1.0),
+        (dpitch * 12.0).clamp(-1.0, 1.0),
+    );
+    let sway_now = vm.sway;
+    vm.sway = sway_now + (target_sway - sway_now) * (time.delta_secs() * 16.0).min(1.0);
+
+    let speed = Vec2::new(velocity.0.x, velocity.0.z).length();
+    vm.bob_phase += time.delta_secs() * (2.2 + speed * 0.35);
+
+    let bob_x = (vm.bob_phase * 2.0).cos() * 4.0 * (speed * 0.08).min(1.0);
+    let bob_y = (vm.bob_phase * 4.0).sin().abs() * 6.0 * (speed * 0.08).min(1.0);
+
+    let reload_t = if vm.reload > 0.0 {
+        1.0 - vm.reload / 0.65
+    } else {
+        0.0
+    };
+    let reload_curve = (reload_t * PI).sin().max(0.0);
+
+    node.right = Val::Px(56.0 - vm.sway.x * 26.0 - bob_x - reload_curve * 22.0);
+    node.bottom = Val::Px(18.0 - vm.sway.y * 20.0 + bob_y - vm.recoil * 32.0 - reload_curve * 34.0);
+
+    color.0 = if vm.reload > 0.0 {
+        Color::srgb(0.78, 0.78, 0.78)
+    } else {
+        Color::srgb(0.93, 0.93, 0.93)
+    };
+}
+
 fn touches_solid(eye: Vec3, map: &ArenaMap, crouched: bool) -> bool {
     map.solids
         .iter()
@@ -324,16 +464,18 @@ fn respawn(
             Entity,
             &mut Transform,
             &mut Player,
+            &mut ViewModelState,
             Option<&mut RespawnTimer>,
         ),
         With<LocalPlayer>,
     >,
     mut remote: Query<(&mut Transform, &mut Player), (With<RemotePlayer>, Without<LocalPlayer>)>,
 ) {
-    let Ok((e, mut t, mut p, timer)) = local.single_mut() else {
+    let Ok((e, mut t, mut p, mut vm, timer)) = local.single_mut() else {
         return;
     };
     if p.hp <= 0 {
+        vm.reload = 0.0;
         if let Some(mut timer) = timer {
             timer.0 -= time.delta_secs();
             if timer.0 <= 0.0 {
@@ -345,6 +487,8 @@ fn respawn(
                 t.translation = Vec3::from_array(s);
                 p.hp = 100;
                 p.weapon = slot_weapon(cfg.selected_weapon);
+                vm.weapon = p.weapon;
+                vm.recoil = 0.0;
                 commands.entity(e).remove::<RespawnTimer>();
             }
         } else {
@@ -364,4 +508,8 @@ fn respawn(
         rt.translation = Vec3::from_array(s);
         rp.hp = 100;
     }
+}
+
+fn shortest_angle_delta(now: f32, before: f32) -> f32 {
+    ((now - before) + PI).rem_euclid(2.0 * PI) - PI
 }

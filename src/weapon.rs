@@ -40,6 +40,15 @@ pub fn weapon_name(w: WeaponKind) -> &'static str {
     }
 }
 
+pub fn viewmodel_ascii(w: WeaponKind) -> &'static str {
+    match w {
+        WeaponKind::HeavyPistol => "  __\n |==]\n/___>",
+        WeaponKind::Smg => "  ____\n |====]\n/_____/",
+        WeaponKind::AssaultRifle => "   ______\n  |======]\n_/_______/",
+        WeaponKind::SniperRifle => "   __________\n  |==========]\n_/___________/",
+        WeaponKind::RocketLauncher => "   .----.\n  |=====>]\n_/______/'",
+    }
+}
 pub fn fire_interval(w: WeaponKind) -> f32 {
     match w {
         WeaponKind::HeavyPistol => 0.35,

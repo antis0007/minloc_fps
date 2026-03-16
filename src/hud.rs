@@ -1,4 +1,7 @@
 use bevy::prelude::*;
+use bevy::camera::visibility::NoFrustumCulling;
+use bevy::sprite::Anchor;
+use bevy::text::LineBreak;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 use crate::app_state::GameState;
@@ -6,13 +9,19 @@ use crate::net::NetSession;
 use crate::player::{LocalPlayer, Player, RemotePlayer, RespawnTimer, ViewModelState};
 use crate::weapon::{viewmodel_ascii, weapon_name};
 
+#[derive(Component)]
+struct ViewModelAscii3d;
+
 pub struct HudPlugin;
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             EguiPrimaryContextPass,
-            (hud_ui, viewmodel_ui, scoreboard_ui, remote_nametags)
-                .run_if(in_state(GameState::InGame)),
+            (hud_ui, scoreboard_ui, remote_nametags).run_if(in_state(GameState::InGame)),
+        )
+        .add_systems(
+            Update,
+            (ensure_viewmodel_3d, update_viewmodel_3d).run_if(in_state(GameState::InGame)),
         );
     }
 }
@@ -171,39 +180,92 @@ fn scoreboard_ui(
     Ok(())
 }
 
-fn viewmodel_ui(
-    mut ctx: EguiContexts,
-    q: Query<(&Player, Option<&RespawnTimer>, &ViewModelState), With<LocalPlayer>>,
-) -> Result {
-    let (p, respawn, vm) = q.single()?;
-    if p.hp <= 0 || respawn.is_some() {
-        return Ok(());
+fn ensure_viewmodel_3d(
+    mut commands: Commands,
+    cameras: Query<Entity, (With<LocalPlayer>, With<Camera3d>)>,
+    vm_text: Query<(), With<ViewModelAscii3d>>,
+) {
+    let Ok(camera) = cameras.single() else { return };
+    if !vm_text.is_empty() {
+        return;
     }
-    let root = ctx.ctx_mut()?;
+    commands.entity(camera).with_child((
+        ViewModelAscii3d,
+        Text2d::new(""),
+        TextFont {
+            font_size: 28.0,
+            ..default()
+        },
+        NoFrustumCulling,
+        TextColor(Color::srgb(0.93, 0.93, 0.93)),
+        TextLayout::new_with_linebreak(LineBreak::NoWrap),
+        Transform::from_xyz(0.62, -0.42, -0.90),
+        Anchor::BOTTOM_RIGHT,
+    ));
+}
 
-    let color = if vm.flash > 0.0 {
-        egui::Color32::from_rgb(255, 235, 166)
-    } else if vm.reload > 0.0 {
-        egui::Color32::from_gray(198)
-    } else {
-        egui::Color32::from_gray(236)
+fn update_viewmodel_3d(
+    q_local: Query<(&Player, Option<&RespawnTimer>, &ViewModelState), With<LocalPlayer>>,
+    mut q_text: Query<(&mut Text2d, &mut TextFont, &mut TextColor, &mut Transform, &mut Visibility), With<ViewModelAscii3d>>,
+) {
+    let Ok((p, respawn, vm)) = q_local.single() else {
+        return;
+    };
+    let Ok((mut text, mut font, mut color, mut transform, mut visibility)) = q_text.single_mut() else {
+        return;
     };
 
-    egui::Area::new("viewmodel_ascii".into())
-        .anchor(
-            egui::Align2::RIGHT_BOTTOM,
-            [56.0 + vm.screen_offset.x, -18.0 - vm.screen_offset.y],
-        )
-        .show(root, |ui| {
-            ui.label(
-                egui::RichText::new(viewmodel_ascii(vm.weapon))
-                    .monospace()
-                    .size(24.0)
-                    .color(color),
-            );
-        });
+    if p.hp <= 0 || respawn.is_some() {
+        *visibility = Visibility::Hidden;
+        return;
+    }
+    *visibility = Visibility::Visible;
 
-    Ok(())
+    let ascii = viewmodel_ascii(vm.weapon);
+
+    let safe_ascii = normalize_sprite_text(ascii);
+    text.0 = safe_ascii;
+
+    let rows = ascii.lines().count().max(1) as f32;
+    let cols = ascii.lines().map(|line| line.chars().count()).max().unwrap_or(1) as f32;
+    let fit_factor = (12.0 / cols).min(4.0 / rows).clamp(0.55, 1.8);
+    let base_scale = 0.0045;
+    let scale = base_scale * fit_factor;
+    font.font_size = (34.0 * fit_factor).clamp(16.0, 48.0);
+
+    transform.translation = Vec3::new(
+        0.62 + vm.screen_offset.x * 0.0017,
+        -0.42 - vm.screen_offset.y * 0.0013,
+        -0.90,
+    );
+    transform.scale = Vec3::new(-scale, scale, 1.0);
+
+    color.0 = if vm.flash > 0.0 {
+        Color::srgb(1.0, 0.94, 0.65)
+    } else if vm.reload > 0.0 {
+        Color::srgb(0.77, 0.77, 0.77)
+    } else {
+        Color::srgb(0.93, 0.93, 0.93)
+    };
+}
+
+
+fn normalize_sprite_text(raw: &str) -> String {
+    raw.chars()
+        .map(|c| match c {
+            '’' | '‘' | '‚' | '‛' => '\'',
+            '“' | '”' | '„' | '‟' => '"',
+            '–' | '—' | '―' => '-',
+            '…' => '.',
+            '╤' | '╦' | '═' | '━' | '─' | '│' | '┃' => '-',
+            '▄' | '█' => '#',
+            '◄' | '«' => '<',
+            '►' | '»' => '>',
+            '\n' | '\r' | '\t' => c,
+            _ if c.is_ascii() => c,
+            _ => '?',
+        })
+        .collect()
 }
 
 fn remote_nametags(

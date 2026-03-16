@@ -3,15 +3,16 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 use crate::app_state::GameState;
 use crate::net::NetSession;
-use crate::player::{LocalPlayer, Player, RemotePlayer, RespawnTimer};
-use crate::weapon::weapon_name;
+use crate::player::{LocalPlayer, Player, RemotePlayer, RespawnTimer, ViewModelState};
+use crate::weapon::{viewmodel_ascii, weapon_name};
 
 pub struct HudPlugin;
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             EguiPrimaryContextPass,
-            (hud_ui, scoreboard_ui, remote_nametags).run_if(in_state(GameState::InGame)),
+            (hud_ui, viewmodel_ui, scoreboard_ui, remote_nametags)
+                .run_if(in_state(GameState::InGame)),
         );
     }
 }
@@ -165,6 +166,41 @@ fn scoreboard_ui(
                         ui.end_row();
                     }
                 });
+        });
+
+    Ok(())
+}
+
+fn viewmodel_ui(
+    mut ctx: EguiContexts,
+    q: Query<(&Player, Option<&RespawnTimer>, &ViewModelState), With<LocalPlayer>>,
+) -> Result {
+    let (p, respawn, vm) = q.single()?;
+    if p.hp <= 0 || respawn.is_some() {
+        return Ok(());
+    }
+    let root = ctx.ctx_mut()?;
+
+    let color = if vm.flash > 0.0 {
+        egui::Color32::from_rgb(255, 235, 166)
+    } else if vm.reload > 0.0 {
+        egui::Color32::from_gray(198)
+    } else {
+        egui::Color32::from_gray(236)
+    };
+
+    egui::Area::new("viewmodel_ascii".into())
+        .anchor(
+            egui::Align2::RIGHT_BOTTOM,
+            [56.0 + vm.screen_offset.x, -18.0 - vm.screen_offset.y],
+        )
+        .show(root, |ui| {
+            ui.label(
+                egui::RichText::new(viewmodel_ascii(vm.weapon))
+                    .monospace()
+                    .size(24.0)
+                    .color(color),
+            );
         });
 
     Ok(())

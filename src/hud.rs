@@ -45,7 +45,7 @@ fn hud_ui(
                             .color(egui::Color32::WHITE),
                     );
                     ui.label(
-                        egui::RichText::new("Ammo --/--")
+                        egui::RichText::new(format!("Ammo {}/{}", p.clip.max(0), p.reserve.max(0)))
                             .size(13.0)
                             .color(egui::Color32::from_gray(210)),
                     );

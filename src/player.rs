@@ -4,6 +4,7 @@ use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
 
 use crate::app_state::{GameState, SessionConfig};
+use crate::combat::refill_for_weapon;
 use crate::map::{ArenaMap, Solid};
 use crate::weapon::{WeaponKind, slot_weapon, viewmodel_ascii};
 
@@ -39,6 +40,8 @@ pub struct RespawnTimer(pub f32);
 pub struct Player {
     pub hp: i32,
     pub weapon: WeaponKind,
+    pub clip: i32,
+    pub reserve: i32,
 }
 
 #[derive(Component)]
@@ -48,6 +51,7 @@ pub struct ViewModelState {
     pub bob_phase: f32,
     pub recoil: f32,
     pub reload: f32,
+    pub flash: f32,
     pub last_yaw: f32,
     pub last_pitch: f32,
 }
@@ -59,6 +63,7 @@ impl ViewModelState {
             bob_phase: 0.0,
             recoil: 0.0,
             reload: 0.0,
+            flash: 0.0,
             last_yaw: 0.0,
             last_pitch: 0.0,
         }
@@ -128,11 +133,18 @@ fn ensure_local_player(
         .map(|s| s.pos)
         .unwrap_or([0.0, 1.5, 0.0]);
     let weapon = slot_weapon(cfg.selected_weapon);
+    let mut player = Player {
+        hp: 100,
+        weapon,
+        clip: 0,
+        reserve: 0,
+    };
+    refill_for_weapon(&mut player);
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(p[0], p[1], p[2]),
         LocalPlayer,
-        Player { hp: 100, weapon },
+        player,
         ViewModelState::new(weapon),
         Velocity::default(),
         MoveState::default(),
@@ -190,6 +202,8 @@ fn ensure_remote_player(
         Player {
             hp: 100,
             weapon: WeaponKind::AssaultRifle,
+            clip: 30,
+            reserve: 120,
         },
     ));
 }
@@ -313,7 +327,6 @@ fn movement(
 
 fn animate_viewmodel(
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
     look: Res<LookState>,
     mut local: Query<
         (
@@ -333,10 +346,7 @@ fn animate_viewmodel(
         return;
     };
 
-    if keys.just_pressed(KeyCode::KeyR) && vm.reload <= 0.0 {
-        vm.reload = 0.65;
-    }
-    vm.reload = (vm.reload - time.delta_secs()).max(0.0);
+    vm.flash = (vm.flash - time.delta_secs()).max(0.0);
     vm.recoil = (vm.recoil - time.delta_secs() * 5.0).max(0.0);
 
     if vm.weapon != player.weapon {
@@ -368,7 +378,7 @@ fn animate_viewmodel(
     let bob_y = (vm.bob_phase * 4.0).sin().abs() * 6.0 * (speed * 0.08).min(1.0);
 
     let reload_t = if vm.reload > 0.0 {
-        1.0 - vm.reload / 0.65
+        (1.0 - vm.reload / 2.2).clamp(0.0, 1.0)
     } else {
         0.0
     };
@@ -377,7 +387,9 @@ fn animate_viewmodel(
     node.right = Val::Px(56.0 - vm.sway.x * 26.0 - bob_x - reload_curve * 22.0);
     node.bottom = Val::Px(18.0 - vm.sway.y * 20.0 + bob_y - vm.recoil * 32.0 - reload_curve * 34.0);
 
-    color.0 = if vm.reload > 0.0 {
+    color.0 = if vm.flash > 0.0 {
+        Color::srgb(1.0, 0.92, 0.65)
+    } else if vm.reload > 0.0 {
         Color::srgb(0.78, 0.78, 0.78)
     } else {
         Color::srgb(0.93, 0.93, 0.93)
@@ -442,6 +454,7 @@ fn choose_weapon(
     cfg.selected_weapon = slot;
     let Ok(mut p) = q.single_mut() else { return };
     p.weapon = slot_weapon(slot);
+    refill_for_weapon(&mut p);
 }
 
 fn update_remote(time: Res<Time>, mut q: Query<(&mut Transform, &mut Player), With<RemotePlayer>>) {
@@ -487,8 +500,10 @@ fn respawn(
                 t.translation = Vec3::from_array(s);
                 p.hp = 100;
                 p.weapon = slot_weapon(cfg.selected_weapon);
+                refill_for_weapon(&mut p);
                 vm.weapon = p.weapon;
                 vm.recoil = 0.0;
+                vm.flash = 0.0;
                 commands.entity(e).remove::<RespawnTimer>();
             }
         } else {
@@ -507,6 +522,7 @@ fn respawn(
             .unwrap_or([8.0, 1.5, 0.0]);
         rt.translation = Vec3::from_array(s);
         rp.hp = 100;
+        refill_for_weapon(&mut rp);
     }
 }
 

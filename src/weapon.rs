@@ -87,6 +87,36 @@ pub fn auto_fire(w: WeaponKind) -> bool {
     matches!(w, WeaponKind::Smg | WeaponKind::AssaultRifle)
 }
 
+pub fn mag_size(w: WeaponKind) -> i32 {
+    match w {
+        WeaponKind::HeavyPistol => 10,
+        WeaponKind::Smg => 40,
+        WeaponKind::AssaultRifle => 30,
+        WeaponKind::SniperRifle => 5,
+        WeaponKind::RocketLauncher => 1,
+    }
+}
+
+pub fn reserve_ammo(w: WeaponKind) -> i32 {
+    match w {
+        WeaponKind::HeavyPistol => 50,
+        WeaponKind::Smg => 160,
+        WeaponKind::AssaultRifle => 120,
+        WeaponKind::SniperRifle => 20,
+        WeaponKind::RocketLauncher => 6,
+    }
+}
+
+pub fn reload_time(w: WeaponKind) -> f32 {
+    match w {
+        WeaponKind::HeavyPistol => 1.2,
+        WeaponKind::Smg => 1.5,
+        WeaponKind::AssaultRifle => 1.7,
+        WeaponKind::SniperRifle => 2.0,
+        WeaponKind::RocketLauncher => 2.2,
+    }
+}
+
 fn tick_cooldowns(time: Res<Time>, mut q: Query<&mut Cooldown>) {
     for mut cd in &mut q {
         cd.0 = (cd.0 - time.delta_secs()).max(0.0);

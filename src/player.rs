@@ -6,14 +6,12 @@ use bevy::prelude::*;
 use crate::app_state::{GameState, SessionConfig};
 use crate::combat::refill_for_weapon;
 use crate::map::{ArenaMap, Solid};
-use crate::weapon::{WeaponKind, slot_weapon, viewmodel_ascii};
+use crate::weapon::{WeaponKind, slot_weapon};
 
 #[derive(Component)]
 pub struct LocalPlayer;
 #[derive(Component)]
 pub struct RemotePlayer;
-#[derive(Component)]
-pub struct ViewModelAscii;
 #[derive(Component, Default)]
 pub struct Velocity(pub Vec3);
 #[derive(Component)]
@@ -52,6 +50,7 @@ pub struct ViewModelState {
     pub recoil: f32,
     pub reload: f32,
     pub flash: f32,
+    pub screen_offset: Vec2,
     pub last_yaw: f32,
     pub last_pitch: f32,
 }
@@ -64,6 +63,7 @@ impl ViewModelState {
             recoil: 0.0,
             reload: 0.0,
             flash: 0.0,
+            screen_offset: Vec2::ZERO,
             last_yaw: 0.0,
             last_pitch: 0.0,
         }
@@ -84,12 +84,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(OnEnter(GameState::MainMenu), cleanup_players)
             .add_systems(
                 Update,
-                (
-                    ensure_local_player,
-                    ensure_remote_player,
-                    ensure_viewmodel_ascii,
-                )
-                    .run_if(in_state(GameState::InGame)),
+                (ensure_local_player, ensure_remote_player).run_if(in_state(GameState::InGame)),
             )
             .add_systems(
                 Update,
@@ -109,7 +104,7 @@ impl Plugin for PlayerPlugin {
 
 fn cleanup_players(
     mut commands: Commands,
-    q: Query<Entity, Or<(With<LocalPlayer>, With<RemotePlayer>, With<ViewModelAscii>)>>,
+    q: Query<Entity, Or<(With<LocalPlayer>, With<RemotePlayer>)>>,
     mut look: ResMut<LookState>,
 ) {
     for e in &q {
@@ -148,34 +143,6 @@ fn ensure_local_player(
         ViewModelState::new(weapon),
         Velocity::default(),
         MoveState::default(),
-    ));
-}
-
-fn ensure_viewmodel_ascii(
-    mut commands: Commands,
-    local: Query<&ViewModelState, With<LocalPlayer>>,
-    q: Query<(), With<ViewModelAscii>>,
-) {
-    if !q.is_empty() {
-        return;
-    }
-    let Ok(vm) = local.single() else {
-        return;
-    };
-    commands.spawn((
-        Text::new(viewmodel_ascii(vm.weapon)),
-        TextFont {
-            font_size: 21.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.93, 0.93, 0.93)),
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(56.0),
-            bottom: Val::Px(18.0),
-            ..default()
-        },
-        ViewModelAscii,
     ));
 }
 
@@ -337,28 +304,20 @@ fn animate_viewmodel(
         ),
         With<LocalPlayer>,
     >,
-    mut ascii: Query<(&mut Text, &mut Node, &mut TextColor), With<ViewModelAscii>>,
 ) {
     let Ok((player, velocity, dead, mut vm)) = local.single_mut() else {
-        return;
-    };
-    let Ok((mut text, mut node, mut color)) = ascii.single_mut() else {
         return;
     };
 
     vm.flash = (vm.flash - time.delta_secs()).max(0.0);
     vm.recoil = (vm.recoil - time.delta_secs() * 5.0).max(0.0);
 
-    if vm.weapon != player.weapon {
-        *text = Text::new(viewmodel_ascii(player.weapon));
-        vm.weapon = player.weapon;
-    }
+    vm.weapon = player.weapon;
 
     if player.hp <= 0 || dead.is_some() {
-        node.display = Display::None;
+        vm.screen_offset = Vec2::ZERO;
         return;
     }
-    node.display = Display::Flex;
 
     let dyaw = shortest_angle_delta(look.yaw, vm.last_yaw);
     let dpitch = look.pitch - vm.last_pitch;
@@ -384,16 +343,10 @@ fn animate_viewmodel(
     };
     let reload_curve = (reload_t * PI).sin().max(0.0);
 
-    node.right = Val::Px(56.0 - vm.sway.x * 26.0 - bob_x - reload_curve * 22.0);
-    node.bottom = Val::Px(18.0 - vm.sway.y * 20.0 + bob_y - vm.recoil * 32.0 - reload_curve * 34.0);
-
-    color.0 = if vm.flash > 0.0 {
-        Color::srgb(1.0, 0.92, 0.65)
-    } else if vm.reload > 0.0 {
-        Color::srgb(0.78, 0.78, 0.78)
-    } else {
-        Color::srgb(0.93, 0.93, 0.93)
-    };
+    vm.screen_offset = Vec2::new(
+        -vm.sway.x * 26.0 - bob_x - reload_curve * 22.0,
+        -vm.sway.y * 20.0 + bob_y - vm.recoil * 32.0 - reload_curve * 34.0,
+    );
 }
 
 fn touches_solid(eye: Vec3, map: &ArenaMap, crouched: bool) -> bool {

@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::camera::visibility::NoFrustumCulling;
 use bevy::sprite::Anchor;
 use bevy::text::LineBreak;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
@@ -192,24 +193,25 @@ fn ensure_viewmodel_3d(
         ViewModelAscii3d,
         Text2d::new(""),
         TextFont {
-            font_size: 36.0,
+            font_size: 28.0,
             ..default()
         },
+        NoFrustumCulling,
         TextColor(Color::srgb(0.93, 0.93, 0.93)),
         TextLayout::new_with_linebreak(LineBreak::NoWrap),
-        Transform::from_xyz(0.34, -0.22, -0.62),
+        Transform::from_xyz(0.62, -0.42, -0.90),
         Anchor::BOTTOM_RIGHT,
     ));
 }
 
 fn update_viewmodel_3d(
     q_local: Query<(&Player, Option<&RespawnTimer>, &ViewModelState), With<LocalPlayer>>,
-    mut q_text: Query<(&mut Text2d, &mut TextColor, &mut Transform, &mut Visibility), With<ViewModelAscii3d>>,
+    mut q_text: Query<(&mut Text2d, &mut TextFont, &mut TextColor, &mut Transform, &mut Visibility), With<ViewModelAscii3d>>,
 ) {
     let Ok((p, respawn, vm)) = q_local.single() else {
         return;
     };
-    let Ok((mut text, mut color, mut transform, mut visibility)) = q_text.single_mut() else {
+    let Ok((mut text, mut font, mut color, mut transform, mut visibility)) = q_text.single_mut() else {
         return;
     };
 
@@ -220,16 +222,21 @@ fn update_viewmodel_3d(
     *visibility = Visibility::Visible;
 
     let ascii = viewmodel_ascii(vm.weapon);
-    text.0 = ascii.to_owned();
+
+    let safe_ascii = normalize_sprite_text(ascii);
+    text.0 = safe_ascii;
 
     let rows = ascii.lines().count().max(1) as f32;
     let cols = ascii.lines().map(|line| line.chars().count()).max().unwrap_or(1) as f32;
-    let scale = (0.40 / cols).min(0.26 / rows).max(0.010);
+    let fit_factor = (12.0 / cols).min(4.0 / rows).clamp(0.55, 1.8);
+    let base_scale = 0.0045;
+    let scale = base_scale * fit_factor;
+    font.font_size = (34.0 * fit_factor).clamp(16.0, 48.0);
 
     transform.translation = Vec3::new(
-        0.34 + vm.screen_offset.x * 0.0028,
-        -0.22 - vm.screen_offset.y * 0.0022,
-        -0.62,
+        0.62 + vm.screen_offset.x * 0.0017,
+        -0.42 - vm.screen_offset.y * 0.0013,
+        -0.90,
     );
     transform.scale = Vec3::new(-scale, scale, 1.0);
 
@@ -240,6 +247,25 @@ fn update_viewmodel_3d(
     } else {
         Color::srgb(0.93, 0.93, 0.93)
     };
+}
+
+
+fn normalize_sprite_text(raw: &str) -> String {
+    raw.chars()
+        .map(|c| match c {
+            '’' | '‘' | '‚' | '‛' => '\'',
+            '“' | '”' | '„' | '‟' => '"',
+            '–' | '—' | '―' => '-',
+            '…' => '.',
+            '╤' | '╦' | '═' | '━' | '─' | '│' | '┃' => '-',
+            '▄' | '█' => '#',
+            '◄' | '«' => '<',
+            '►' | '»' => '>',
+            '\n' | '\r' | '\t' => c,
+            _ if c.is_ascii() => c,
+            _ => '?',
+        })
+        .collect()
 }
 
 fn remote_nametags(
